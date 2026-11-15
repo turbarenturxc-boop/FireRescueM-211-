@@ -1,6 +1,7 @@
 """FIRE RESCUE: ENDLESS INFERNO (SF211 OOP) — SINGLE-FILE EDITION
 
-This single main.py includes all game classes. No core/, entities/ or image files.
+All classes are in ONE file. Rooms, Fire and Victim are separate classes.
+No core/, entities/ or image files required.
 Install: py -3.14 -m pip install pygame-ce
 Play:    py -3.14 main.py
 Checks:  py -3.14 main.py --check
@@ -8,7 +9,7 @@ Checks:  py -3.14 main.py --check
 Controls: arrows/WASD move; hold SPACE/J spray or rescue; E rescue;
           P pause, Esc return to menu; Enter start; R replay.
 High score is stored in endless_highscore.json next to this main.py.
-Covers Weeks 10-13: Polymorphism, Abstract Base Class, Observer, State.
+Covers Weeks 03, 10-13: Encapsulation, Polymorphism, ABC, Observer, State.
 """
 
 import json
@@ -86,35 +87,144 @@ class GameObject(pygame.sprite.Sprite, ABC):
 
 
 # ======================================================================
-# ROOM (original: entities/room.py)
+# ROOM, FIRE, VICTIM — separate responsibilities (Week 03 Encapsulation)
 # ======================================================================
 
-class Room(GameObject):
-    def __init__(self, col, row):
-        self.col = col
-        self.row = row
-        super().__init__((44, 68), (ROOM_X[col], ROOM_Y[row] - 6))
-        self._fire = 0.0
-        self.victim = False
-        self.rescued = False
+class Fire(GameObject):
+    """A fire's intensity and animation are its OWN responsibility."""
+
+    def __init__(self, room):
+        self.room = room
+        super().__init__((44, 68), room.rect.center)
+        self._intensity = 0.0
+        self.clock = 0.0
+        self.draw()
+
+    @property
+    def intensity(self):
+        return self._intensity
+
+    @intensity.setter
+    def intensity(self, value):
+        # Week 03: protect the invariant 0 <= fire <= 1.7.
+        self._intensity = max(0.0, min(1.7, float(value)))
+
+    def ignite(self, strength=0.75):
+        self.intensity += strength
+
+    def extinguish(self, dt):
+        if self.intensity <= 0:
+            return False
+        self.intensity -= 1.25 * dt
+        if self.intensity <= 0.01:
+            self.intensity = 0
+            return True
+        return False
+
+    def update(self, dt):
+        self.clock += dt
+        self.draw()
+
+    def draw(self):
+        s = self.image
+        s.fill((0, 0, 0, 0))
+        if self.intensity <= 0:
+            return
+        for i in range(4):
+            x = 12 + 6 * i
+            wave = int(math.sin(self.clock * 13 + i * 2) * 3)
+            top = 41 - min(10, int(self.intensity * 6)) + wave
+            pygame.draw.polygon(s, FIRE, [(x, 52), (x + 6, 52), (x + 3, top)])
+            pygame.draw.polygon(s, ORANGE, [(x + 2, 51), (x + 5, 51), (x + 3, top + 6)])
+        pygame.draw.rect(s, GOLD, (18, 45, 8, 6))
+        for k in range(2):
+            smoke_y = 20 - int((self.clock * 10 + k * 9) % 18)
+            pygame.draw.rect(s, (83, 83, 101), (17 + k * 7, smoke_y, 6, 4))
+
+
+class Victim(GameObject):
+    """The trapped person owns rescue status, progress, and HELP animation."""
+
+    def __init__(self, room):
+        self.room = room
+        super().__init__((44, 68), room.rect.center)
+        self.waiting = False
         self.rescue_progress = 0.0
         self.clock = 0.0
-        self.flash = 0.0
         self.font = pygame.font.SysFont("consolas", 10, bold=True)
         self.draw()
 
     @property
+    def needs_rescue(self):
+        return self.waiting
+
+    def appear(self):
+        self.waiting = True
+        self.rescue_progress = 0.0
+
+    def rescue(self, dt, fire):
+        # Player must put out the fire before rescuing the person.
+        if not self.waiting or fire.intensity > 0:
+            return False
+        self.rescue_progress += dt
+        if self.rescue_progress >= 0.85:
+            self.waiting = False
+            self.rescue_progress = 0.0
+            return True
+        return False
+
+    def update(self, dt):
+        self.clock += dt
+        self.draw()
+
+    def draw(self):
+        s = self.image
+        s.fill((0, 0, 0, 0))
+        if not self.waiting:
+            return
+        wave = int(math.sin(self.clock * 9 + self.room.col) * 3)
+        pygame.draw.rect(s, MINT, (16, 40, 14, 13))
+        pygame.draw.rect(s, (235, 173, 123), (17, 28, 10, 10))
+        pygame.draw.rect(s, DARK, (17, 28, 10, 3))
+        pygame.draw.rect(s, INK, (23, 33, 2, 2))
+        pygame.draw.line(s, (235, 173, 123), (29, 43), (35, 32 + wave), 3)
+        tag = self.font.render("HELP!", False, FIRE)
+        pygame.draw.rect(s, (247, 239, 204), (7, 1, 30, 12))
+        s.blit(tag, tag.get_rect(center=(22, 7)))
+
+
+class Room(GameObject):
+    """Room draws architecture; Fire and Victim handle their own states."""
+
+    def __init__(self, col, row):
+        self.col = col
+        self.row = row
+        super().__init__((44, 68), (ROOM_X[col], ROOM_Y[row] - 6))
+        self.fire_object = Fire(self)
+        self.victim_object = Victim(self)
+        self.flash = 0.0
+        self.draw()
+
+    @property
     def fire(self):
-        """Encapsulation: fire intensity must always be between 0 and 1.7."""
-        return self._fire
+        # Backwards compatible with old game mechanics and score/HUD code.
+        return self.fire_object.intensity
 
     @fire.setter
     def fire(self, value):
-        self._fire = max(0.0, min(1.7, float(value)))
+        self.fire_object.intensity = value
 
     @property
     def needs_rescue(self):
-        return self.victim and not self.rescued
+        return self.victim_object.needs_rescue
+
+    @property
+    def rescue_progress(self):
+        return self.victim_object.rescue_progress
+
+    @rescue_progress.setter
+    def rescue_progress(self, value):
+        self.victim_object.rescue_progress = max(0.0, float(value))
 
     @property
     def x(self):
@@ -125,74 +235,39 @@ class Room(GameObject):
         return ROOM_Y[self.row]
 
     def ignite(self, strength=0.75):
-        self.fire += strength
+        self.fire_object.ignite(strength)
         self.flash = 0.30
 
     def add_victim(self):
-        self.victim = True
-        self.rescued = False
-        self.rescue_progress = 0.0
+        self.victim_object.appear()
 
     def spray(self, dt):
-        """Return True only when a burning room is completely extinguished."""
-        if self.fire <= 0:
-            return False
-        self.fire -= 1.25 * dt
-        if self.fire <= 0.01:
-            self.fire = 0
+        if self.fire_object.extinguish(dt):
             self.flash = 0.30
             return True
         return False
 
     def rescue(self, dt):
-        """Rescue works only if the person is present and the fire is out."""
-        if not self.needs_rescue or self.fire > 0:
-            return False
-        self.rescue_progress += dt
-        if self.rescue_progress >= 0.85:
-            self.rescued = True
-            self.rescue_progress = 0
+        if self.victim_object.rescue(dt, self.fire_object):
             self.flash = 0.40
             return True
         return False
 
     def update(self, dt):
-        self.clock += dt
-        self.flash = max(0, self.flash - dt)
+        self.flash = max(0.0, self.flash - dt)
         self.draw()
 
     def draw(self):
         s = self.image
         s.fill((0, 0, 0, 0))
-        # Local origin is (room center x-22, room center y-40).
         pygame.draw.rect(s, (67, 40, 55), (5, 15, 35, 46))
         pygame.draw.rect(s, (237, 190, 128), (7, 15, 30, 42))
         pygame.draw.rect(s, (26, 32, 59), (10, 18, 24, 36))
-        if self.fire <= 0:
+        if self.fire == 0:
             pygame.draw.rect(s, (54, 98, 120), (12, 21, 20, 30))
             pygame.draw.rect(s, (87, 146, 159), (12, 21, 7, 27))
         else:
             pygame.draw.rect(s, (109, 48, 47), (11, 20, 22, 32))
-            for i in range(4):
-                x = 12 + 6 * i
-                wave = int(math.sin(self.clock * 13 + i * 2) * 3)
-                top = 41 - min(10, int(self.fire * 6)) + wave
-                pygame.draw.polygon(s, FIRE, [(x, 52), (x+6, 52), (x+3, top)])
-                pygame.draw.polygon(s, ORANGE, [(x+2, 51), (x+5, 51), (x+3, top+6)])
-            pygame.draw.rect(s, GOLD, (18, 45, 8, 6))
-            for k in range(2):
-                smoke_y = 20 - int((self.clock*10 + k*9) % 18)
-                pygame.draw.rect(s, (83, 83, 101), (17+k*7, smoke_y, 6, 4))
-        if self.needs_rescue:
-            wave = int(math.sin(self.clock * 9 + self.col) * 3)
-            pygame.draw.rect(s, MINT, (16, 40, 14, 13))
-            pygame.draw.rect(s, (235, 173, 123), (17, 28, 10, 10))
-            pygame.draw.rect(s, DARK, (17, 28, 10, 3))
-            pygame.draw.rect(s, INK, (23, 33, 2, 2))
-            pygame.draw.line(s, (235, 173, 123), (29, 43), (35, 32+wave), 3)
-            tag = self.font.render("HELP!", False, FIRE)
-            pygame.draw.rect(s, (247, 239, 204), (7, 1, 30, 12))
-            s.blit(tag, tag.get_rect(center=(22, 7)))
         pygame.draw.rect(s, (251, 212, 157), (20, 18, 4, 35))
         pygame.draw.rect(s, (253, 220, 167), (8, 35, 28, 3))
         pygame.draw.rect(s, (89, 49, 59), (5, 56, 35, 5))
@@ -714,7 +789,7 @@ class MenuState(GameState):
                     room.ignite(1)
                 if (col+row*2) % 7 == 0:
                     room.add_victim()
-                self.sprites.add(room)
+                self.sprites.add(room, room.fire_object, room.victim_object)
         self.sprites.add(FireDemon())
 
     def handle_event(self, event):
@@ -752,7 +827,13 @@ class PlayState(GameState):
         self.rooms = [Room(c, r) for r in range(ROWS) for c in range(COLS)]
         self.player = Firefighter()
         self.demon = FireDemon()
-        self.all_sprites = pygame.sprite.Group(*self.rooms, self.demon, self.player)
+        # Layers: windows first, then separate fire and trapped-person sprites.
+        self.all_sprites = pygame.sprite.Group(
+            *self.rooms,
+            *(room.fire_object for room in self.rooms),
+            *(room.victim_object for room in self.rooms),
+            self.demon, self.player,
+        )
         self.players = pygame.sprite.GroupSingle(self.player)
         self.hazards = pygame.sprite.Group()
         self.fireballs = pygame.sprite.Group()
@@ -1103,6 +1184,30 @@ def run_checks():
             self.assertTrue(room.spray(.5))
             self.assertTrue(room.rescue(1))
             self.assertFalse(room.needs_rescue)
+
+        def test_fire_and_victim_separate_classes(self):
+            room = Room(1, 1)
+            self.assertIsInstance(room.fire_object, Fire)
+            self.assertIsInstance(room.victim_object, Victim)
+            self.assertIsNot(room.fire_object, room.victim_object)
+            room.ignite(1)
+            room.add_victim()
+            self.assertEqual(room.fire, room.fire_object.intensity)
+            self.assertTrue(room.victim_object.needs_rescue)
+            room.fire_object.extinguish(1)
+            self.assertFalse(room.fire > 0)
+            self.assertTrue(room.victim_object.needs_rescue)
+            self.assertTrue(room.rescue(1))
+            self.assertFalse(room.victim_object.needs_rescue)
+
+        def test_fire_victim_in_polymorphic_group(self):
+            game = Game()
+            play = PlayState(game)
+            room = play.rooms[0]
+            self.assertIn(room, play.all_sprites)
+            self.assertIn(room.fire_object, play.all_sprites)
+            self.assertIn(room.victim_object, play.all_sprites)
+            play.all_sprites.update(0.01)
 
         def test_fireball(self):
             demon = FireDemon()
